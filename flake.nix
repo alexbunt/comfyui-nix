@@ -1,5 +1,5 @@
 {
-  description = "A Nix flake for ComfyUI v0.30.0 with Python 3.12";
+  description = "A Nix flake for ComfyUI with Python 3.12";
 
   nixConfig = {
     extra-substituters = [
@@ -16,6 +16,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Unstable dropped Intel macOS; keep that platform on the supported branch.
+    nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-parts.url = "github:hercules-ci/flake-parts";
   };
 
@@ -24,6 +26,7 @@
       self,
       nixpkgs,
       flake-parts,
+      ...
     }:
     let
       versions = import ./nix/versions.nix;
@@ -69,7 +72,7 @@
           # - Fast builds (download ~2GB vs compile for hours)
           # - Low memory usage (no 30-60GB RAM requirement)
           # - `gfx1100` tested (to date)
-          # - ROCm 7.1 runtime bundled in wheels
+          # - ROCm 7.2 runtime bundled in wheels
           # =======================================================================
 
           # Linux pkgs for cross-building Docker images from any system
@@ -172,15 +175,17 @@
           # Configure the pkgs instance used by perSystem with our required settings.
           # This ensures all native builds use consistent nixpkgs configuration.
           # Note: Cross-platform Docker builds still need their own pkgs instances (see above).
-          _module.args.pkgs = import inputs.nixpkgs {
-            inherit system;
-            config = {
-              allowUnfree = true;
-              allowBrokenPredicate = pkg: (pkg.pname or "") == "open-clip-torch";
-              # Keep the x86_64-only ROCm development shell evaluable on aarch64-linux.
-              allowUnsupportedSystem = system == "aarch64-linux";
-            };
-          };
+          _module.args.pkgs =
+            import (if system == "x86_64-darwin" then inputs.nixpkgs-darwin else inputs.nixpkgs)
+              {
+                inherit system;
+                config = {
+                  allowUnfree = true;
+                  allowBrokenPredicate = pkg: (pkg.pname or "") == "open-clip-torch";
+                  # Keep the x86_64-only ROCm development shell evaluable on aarch64-linux.
+                  allowUnsupportedSystem = system == "aarch64-linux";
+                };
+              };
 
           packages = {
             default = nativePackages.default;
@@ -263,7 +268,7 @@
               rocm = buildShell nativePackagesRocm.pythonRuntime;
             };
 
-          formatter = pkgs.nixfmt-rfc-style;
+          formatter = pkgs.nixfmt-tree;
 
           checks = import ./nix/checks.nix {
             inherit

@@ -37,6 +37,7 @@ let
     package.pythonRuntime.pkgs.torch.outPath == extended.pythonRuntime.pkgs.torch.outPath
     && package.pythonRuntime.pkgs.numpy.outPath == extended.pythonRuntime.pkgs.numpy.outPath
   ) backendPackages;
+  isNixosCheckSystem = pkgs.stdenv.isLinux;
   evalModule =
     serviceConfig:
     nixpkgs.lib.nixosSystem {
@@ -213,42 +214,89 @@ let
       removedRequirements,
     }:
     let
-      torchPython = (pythonFor backend).withPackages (ps: [ ps.torch ]);
+      torchPython = (pythonFor backend).withPackages (ps: [
+        ps.torch
+        ps.torchvision
+        ps.torchaudio
+        ps.triton
+        ps.torchcodec
+      ]);
       removedTuple = pkgs.lib.concatMapStrings (r: ''"${r}", '') removedRequirements;
     in
-    pkgs.runCommand "${backend}-torch-runtime-deps" { nativeBuildInputs = [ torchPython ]; } ''
-      ${torchPython}/bin/python - <<'PY'
-      import importlib.metadata
+    pkgs.runCommand "${backend}-torch-runtime-deps"
+      {
+        nativeBuildInputs = [
+          torchPython
+        ]
+        ++ pkgs.lib.optionals (backend == "none") [
+          pkgs.stdenv.cc
+          pkgs.openssl
+        ];
+      }
+      ''
+        export TORCHINDUCTOR_CACHE_DIR="$TMPDIR/torchinductor"
+        ${torchPython}/bin/python - <<'PY'
+        import importlib.metadata
 
-      import setuptools
-      import torch
+        import setuptools
+        import torch
+        import torchvision
+        import torchaudio
+        import triton
+        import torchcodec
 
-      requirements = importlib.metadata.requires("torch") or []
-      removed_requirements = (${removedTuple})
+        requirements = importlib.metadata.requires("torch") or []
+        removed_requirements = (${removedTuple})
 
-      assert not any(
-          requirement.startswith(removed_requirements) for requirement in requirements
-      )
-      assert setuptools.__version__
-      assert torch.__version__
-      assert "${expectedTorchVersions.${backend}}" in torch.__version__, torch.__version__
-      PY
-      touch $out
-    '';
+        assert not any(
+            requirement.startswith(removed_requirements) for requirement in requirements
+        )
+        assert setuptools.__version__
+        assert torch.__version__
+        assert "${expectedTorchVersions.${backend}}" in torch.__version__, torch.__version__
+        assert torch.__version__.split("+")[0] == "${(pythonFor backend).pkgs.torch.version}"
+        assert torchvision.__version__.split("+")[0] == "${(pythonFor backend).pkgs.torchvision.version}"
+        assert torchaudio.__version__.split("+")[0] == "${(pythonFor backend).pkgs.torchaudio.version}"
+        assert triton.__version__ == "${(pythonFor backend).pkgs.triton.version}"
+
+        # Exercise native vision operators and the TorchCodec audio I/O path.
+        boxes = torch.tensor([[0., 0., 2., 2.], [0., 0., 2., 2.]])
+        assert torchvision.ops.nms(boxes, torch.tensor([0.9, 0.8]), 0.5).tolist() == [0]
+        samples = torch.linspace(-0.5, 0.5, 800).reshape(1, -1)
+        torchaudio.save("roundtrip.wav", samples, 8000)
+        decoded, rate = torchaudio.load("roundtrip.wav")
+        assert rate == 8000 and decoded.shape == samples.shape
+        torch.testing.assert_close(decoded, samples, atol=1e-4, rtol=0)
+        ${pkgs.lib.optionalString (backend == "none") ''
+          compiled = torch.compile(lambda x: x.sin() + x.square(), fullgraph=True)
+          torch.testing.assert_close(compiled(samples), samples.sin() + samples.square())
+        ''}
+        PY
+        touch $out
+      '';
   # Guards against the check silently falling back to nixpkgs' CPU torch again.
   expectedTorchVersions = {
+    none = "+cpu";
     cuda = "+cu";
     rocm = "+rocm";
     xpu = "+xpu";
   };
   torchRuntimeDepsChecks =
-    pkgs.lib.optionalAttrs (packages ? cuda) {
+    pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      cpu-torch-runtime-deps = mkTorchRuntimeDeps {
+        backend = "none";
+        removedRequirements = [
+          "nvidia-"
+          "cuda-toolkit"
+        ];
+      };
+    }
+    // pkgs.lib.optionalAttrs (packages ? cuda) {
       cuda-torch-runtime-deps = mkTorchRuntimeDeps {
         backend = "cuda";
         removedRequirements = [
-          "cuda-bindings"
+          "cuda-toolkit"
           "nvidia-"
-          "triton"
         ];
       };
     }
@@ -361,10 +409,10 @@ in
     assert emptyExtendedPackage.pythonRuntime.outPath == pythonRuntime.outPath;
     assert duplicateCorePackage.pythonRuntime.outPath == pythonRuntime.outPath;
     assert backendPackagesPreserved;
-    assert pkgs.lib.hasPrefix packages.default.outPath defaultModuleExecStart;
-    assert pkgs.lib.hasPrefix extendedPackage.outPath moduleExecStart;
-    assert unsupportedPackageRejected;
-    assert backendModulesPreserved;
+    assert !isNixosCheckSystem || pkgs.lib.hasPrefix packages.default.outPath defaultModuleExecStart;
+    assert !isNixosCheckSystem || pkgs.lib.hasPrefix extendedPackage.outPath moduleExecStart;
+    assert !isNixosCheckSystem || unsupportedPackageRejected;
+    assert !isNixosCheckSystem || backendModulesPreserved;
     pkgs.runCommand "extra-python-packages"
       {
         nativeBuildInputs = [ chainedPackage.pythonRuntime ];
@@ -392,14 +440,6 @@ in
     name = "extra-python-packages-runtime";
     package = packages.default;
   };
-
-  nixos-module-namespace =
-    assert upstreamModuleDisabled;
-    pkgs.runCommand "nixos-module-namespace" { } "touch $out";
-
-  nixos-module-read-only-pkgs =
-    assert pkgs.lib.hasPrefix packages.default.outPath readOnlyPkgsExecStart;
-    pkgs.runCommand "nixos-module-read-only-pkgs" { } "touch $out";
 
   pytest =
     let
@@ -485,4 +525,13 @@ in
         find scripts -name '*.sh' -type f -exec shellcheck {} +
         touch $out
       '';
+}
+// pkgs.lib.optionalAttrs isNixosCheckSystem {
+  nixos-module-namespace =
+    assert upstreamModuleDisabled;
+    pkgs.runCommand "nixos-module-namespace" { } "touch $out";
+
+  nixos-module-read-only-pkgs =
+    assert pkgs.lib.hasPrefix packages.default.outPath readOnlyPkgsExecStart;
+    pkgs.runCommand "nixos-module-read-only-pkgs" { } "touch $out";
 }

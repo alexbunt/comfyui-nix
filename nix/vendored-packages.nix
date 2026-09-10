@@ -227,6 +227,19 @@ rec {
     ];
   };
 
+  # hf-gradio's nixpkgs package still propagates gradio-client 2.6.0. Gradio
+  # 6.26 requires 2.6.1, which this file provides directly alongside it.
+  hfGradio = python.pkgs.hf-gradio.overridePythonAttrs (old: {
+    # The matching client is propagated by the parent Gradio package below.
+    dontCheckRuntimeDeps = true;
+    dependencies = pkgs.lib.filter (dependency: (dependency.pname or "") != "gradio-client") (
+      old.dependencies or [ ]
+    );
+    propagatedBuildInputs = pkgs.lib.filter (dependency: (dependency.pname or "") != "gradio-client") (
+      old.propagatedBuildInputs or [ ]
+    );
+  });
+
   gradio = mkWheel {
     pname = "gradio";
     version = versions.vendored.gradio.version;
@@ -247,6 +260,7 @@ rec {
       ffmpy
       gradioClient
       groovy
+      hfGradio
       httpx
       huggingface-hub
       jinja2
@@ -259,6 +273,7 @@ rec {
       pydantic
       pydub
       python-multipart
+      pytz
       pyyaml
       ruff
       safehttpx

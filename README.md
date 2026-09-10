@@ -67,10 +67,10 @@ All [ComfyUI CLI options] are supported. Common examples:
 
 CUDA builds are available for Linux with NVIDIA GPUs. The `#cuda` package uses pre-built PyTorch wheels from pytorch.org which:
 
-- **Fast builds**: Downloads ~2GB of pre-built wheels instead of compiling for hours
+- **Fast builds**: Downloads pre-built wheels instead of compiling for hours
 - **Low memory**: No 30-60GB RAM requirement for compilation
 - **Current architectures**: Supports Turing (RTX 20 series) through Blackwell (RTX 50 series) in one package
-- **Included runtime**: CUDA 13.0 libraries provided by nixpkgs in the Nix closure (no separate toolkit needed)
+- **Included runtime**: CUDA 13.0 toolkit from nixpkgs, plus pinned cuDNN/NCCL/NVSHMEM libraries in the Nix closure (no separate toolkit needed)
 - **Driver requirement**: NVIDIA driver 580 or newer
 
 ```bash
@@ -83,10 +83,10 @@ CUDA 13 no longer supports pre-Turing GPUs. Pascal and Volta users must use an o
 
 ROCm builds are available for Linux with AMD GPUs. The `#rocm` package uses pre-built PyTorch wheels from pytorch.org which:
 
-- **Fast builds**: Downloads ~2GB of pre-built wheels instead of compiling for hours
+- **Fast builds**: Downloads pre-built wheels instead of compiling for hours
 - **Low memory**: No 30-60GB RAM requirement for compilation
-- **Supported architectures**: To date, only `gfx1100` (7900XTX) has been tested
-- **Bundled runtime**: ROCm 7.1 libraries included in wheels (no separate toolkit needed)
+- **Supported architectures**: Previous releases were tested on `gfx1100` (7900 XTX); the updated runtime needs hardware validation
+- **Bundled runtime**: ROCm 7.2 libraries included in wheels (no separate toolkit needed)
 
 ```bash
 nix run github:utensils/comfyui-nix#rocm
@@ -98,7 +98,7 @@ nix run github:utensils/comfyui-nix#rocm
 
 Intel XPU builds are available for Linux x86_64 with Intel GPUs. The `#xpu` package uses pre-built PyTorch wheels from pytorch.org's XPU channel which:
 
-- **Fast builds**: Downloads ~2.5GB of pre-built wheels instead of compiling for hours
+- **Fast builds**: Downloads pre-built wheels instead of compiling for hours
 - **No IPEX required**: In-tree `torch.xpu` backend is sufficient; ComfyUI auto-detects XPU
 - **Bundled runtime**: SYCL / oneAPI / MKL / TBB included in wheels
 
