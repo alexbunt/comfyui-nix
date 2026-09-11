@@ -973,6 +973,18 @@ lib.optionalAttrs useCuda {
         --replace-fail "    def test_crafted_xml_performance(self):" \
                        "    def _test_crafted_xml_performance(self):"
     '';
+    # The custom runner otherwise auto-detects every host CPU, ignoring Nix's
+    # --cores limit. Serial execution avoids excessive memory use and races in
+    # tests which share temporary filesystem state.
+    checkPhase = ''
+      runHook preCheck
+
+      pushd tests
+      ${final.python.interpreter} runtests.py --settings=test_sqlite --parallel=1
+      popd
+
+      runHook postCheck
+    '';
   });
 }
 
