@@ -966,7 +966,13 @@ lib.optionalAttrs useCuda {
 # unreliable when the Nix builder runs several dependency suites concurrently.
 // lib.optionalAttrs (prev ? django) {
   django = prev.django.overridePythonAttrs (old: {
-    disabledTests = (old.disabledTests or [ ]) ++ [ "test_crafted_xml_performance" ];
+    # Django has a custom checkPhase, so the standard disabledTests hook is not
+    # used. Rename the method before its unittest runner performs discovery.
+    postPatch = (old.postPatch or "") + ''
+      substituteInPlace tests/serializers/test_deserialization.py \
+        --replace-fail "    def test_crafted_xml_performance(self):" \
+                       "    def _test_crafted_xml_performance(self):"
+    '';
   });
 }
 
