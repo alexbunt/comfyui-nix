@@ -979,6 +979,18 @@ lib.optionalAttrs useCuda {
   });
 }
 
+# These asynchronous kernel-disconnect tests are sensitive to load in the Nix
+# sandbox: orphan cleanup can miss its deadline, which also makes the companion
+# file-descriptor assertion report the sockets that are still being cleaned up.
+// lib.optionalAttrs (prev ? jupyter-server) {
+  jupyter-server = prev.jupyter-server.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [
+      "test_no_fd_leak_on_disconnect_with_orphaned_kernel_info_channel"
+      "test_disconnect_resolves_orphaned_kernel_info_future"
+    ];
+  });
+}
+
 # mss runs screenshot tests through a virtual X server. They are not relevant
 # to ComfyUI's runtime dependency closure and can fail in a headless Nix build
 # sandbox. Remove this override once nixpkgs' mss checks are sandbox-independent.
