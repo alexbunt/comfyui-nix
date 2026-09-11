@@ -349,13 +349,13 @@ async def _prepare_download_path(download_id: str, full_path: str, remote_size: 
     """
     try:
         target_directory = os.path.dirname(full_path)
-        if not os.path.exists(target_directory):
-            os.makedirs(target_directory, exist_ok=True)
+        if not await asyncio.to_thread(os.path.exists, target_directory):
+            await asyncio.to_thread(os.makedirs, target_directory, exist_ok=True)
             logger.info("Created directory: %s", target_directory)
 
         # Handle existing file conflicts
-        if os.path.exists(full_path):
-            local_size = os.path.getsize(full_path)
+        if await asyncio.to_thread(os.path.exists, full_path):
+            local_size = await asyncio.to_thread(os.path.getsize, full_path)
 
             # If remote size is known and matches, skip the download entirely
             if remote_size > 0 and local_size == remote_size:
@@ -641,7 +641,7 @@ async def resolve_folder(request: web.Request) -> web.Response:
         if folder_name == "custom_nodes":
             continue
         for directory in paths:
-            if os.path.isfile(os.path.join(directory, filename)):
+            if await asyncio.to_thread(os.path.isfile, os.path.join(directory, filename)):
                 return web.json_response({"success": True, "folder": folder_name})
 
     return web.json_response({"success": False, "error": f"File not found: {filename}"})

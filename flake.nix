@@ -24,6 +24,7 @@
       self,
       nixpkgs,
       flake-parts,
+      ...
     }:
     let
       versions = import ./nix/versions.nix;
@@ -71,7 +72,7 @@
           # - Fast builds (download ~2GB vs compile for hours)
           # - Low memory usage (no 30-60GB RAM requirement)
           # - `gfx1100` tested (to date)
-          # - ROCm 7.1 runtime bundled in wheels
+          # - ROCm 7.2 runtime bundled in wheels
           # =======================================================================
 
           # Linux pkgs for cross-building Docker images from any system

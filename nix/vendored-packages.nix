@@ -75,7 +75,6 @@ let
   };
 
   # comfy-angle ships platform-specific wheels (native libEGL/libGLESv2).
-  # No wheel exists for x86_64-darwin; consumers must handle null.
   angleWheel =
     let
       p = pkgs.stdenv.hostPlatform;
@@ -189,7 +188,7 @@ rec {
     inherit (selectPlatformWheel versions.vendored.comfyAimdo) url hash;
   };
 
-  # null on platforms without an upstream wheel (e.g. x86_64-darwin)
+  # null on platforms without an upstream wheel
   comfyAngle =
     if angleWheel == null then
       null
