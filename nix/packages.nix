@@ -11,7 +11,7 @@ let
   useRocm = gpuSupport == "rocm" && pkgs.stdenv.hostPlatform.isLinux;
   useXpu =
     gpuSupport == "xpu" && pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64;
-  cudaPackages = pkgs.cudaPackages_13;
+  cudaPackages = import ./cuda-packages.nix { inherit pkgs versions; };
 
   # Intel XPU runtime libraries (Level Zero loader, Intel compute-runtime, OpenCL ICD)
   # Bundled as a fallback when /run/opengl-driver/lib isn't available (non-NixOS Linux,
@@ -45,6 +45,7 @@ let
       cuda_cudart # libcudart.so.13
       cuda_cupti # libcupti.so.13
       cuda_nvrtc # libnvrtc.so.13 — the one issue #71 trips over
+      libnvjitlink # libnvJitLink.so.13
       libcublas # libcublas.so.13, libcublasLt.so.13
       libcufft # libcufft.so.12
       libcufile # libcufile.so.0
@@ -129,6 +130,15 @@ let
     patches = [
       ../nix/patches/comfyui-cpu-fallback.patch
     ];
+    # Keep upstream's package-version checks consistent with the selected wheels.
+    postPatch = ''
+      substituteInPlace requirements.txt \
+        --replace-fail 'comfyui-frontend-package==1.49.6' 'comfyui-frontend-package==${versions.vendored.frontendPackage.version}' \
+        --replace-fail 'comfyui-workflow-templates==0.11.48' 'comfyui-workflow-templates==${versions.vendored.workflowTemplates.version}' \
+        --replace-fail 'comfyui-embedded-docs==0.5.10' 'comfyui-embedded-docs==${versions.vendored.embeddedDocs.version}' \
+        --replace-fail 'comfy-kitchen==0.2.31' 'comfy-kitchen==${versions.vendored.comfyKitchen.version}' \
+        --replace-fail 'comfy-aimdo==0.4.15' 'comfy-aimdo==${versions.vendored.comfyAimdo.version}'
+    '';
   };
 
   modelDownloaderDir = builtins.path {
@@ -228,7 +238,6 @@ let
           segment-anything # Meta AI SAM model
           sam2 # Meta AI SAM 2 model
           # Impact Subpack dependencies
-          ultralytics # YOLO object detection (for UltralyticsDetectorProvider)
           # KJNodes dependencies
           mss # Screen capture
           # General ML utilities
@@ -252,6 +261,8 @@ let
           onnxruntime # ONNX runtime
         ]
         ++ [ ps."color-matcher" ] # Color matching (hyphenated name needs quoting)
+        # Upstream disables Ultralytics on Intel macOS after native test crashes.
+        ++ lib.optionals (available ps.ultralytics) [ ps.ultralytics ]
         # Common custom-node deps ("it just works" set)
         ++ lib.optionals (ps ? ollama && available ps.ollama) [ ps.ollama ]
         ++ lib.optionals (ps ? "pytorch-lightning" && available ps."pytorch-lightning") [
@@ -270,6 +281,7 @@ let
         torchPackages
         ++ lib.optionals (ps ? torchvision && available ps.torchvision) [ ps.torchvision ]
         ++ lib.optionals (ps ? torchaudio && available ps.torchaudio) [ ps.torchaudio ]
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ ps.torchcodec ]
         ++ lib.optionals (ps ? torchsde && available ps.torchsde) [ ps.torchsde ]
         # kornia-rs is still marked bad on aarch64-linux in pinned nixpkgs.
         ++ lib.optionals (
@@ -305,7 +317,7 @@ let
           vendored.comfyAimdo
           vendored.sageattention
         ]
-        # comfy-angle (GLSL shader nodes): no wheel on x86_64-darwin
+        # comfy-angle (GLSL shader nodes): include it where a platform wheel exists
         ++ lib.optionals (vendored.comfyAngle != null) [ vendored.comfyAngle ];
     in
     base ++ extras ++ optionals ++ extraPythonPackages ps
@@ -404,6 +416,7 @@ let
       pkgs.findutils
       pkgs.gnused
       pkgs.git # Required for ComfyUI Manager to clone custom nodes
+      pkgs.openssl # PyTorch 2.14 Inductor hashes generated precompiled headers
     ]
     ++ lib.optionals (!pkgs.stdenv.hostPlatform.isDarwin) [
       pkgs.xdg-utils # Provides xdg-open for --open flag on Linux

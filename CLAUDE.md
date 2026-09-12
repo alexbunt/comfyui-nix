@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Run application**: `nix run` (default)
 - **Run with browser**: `nix run -- --open` (automatically opens browser)
 - **Run with CUDA**: `nix run .#cuda` (Linux/NVIDIA only, uses pre-built PyTorch CUDA wheels)
-- **Run with ROCm**: `nix run .#rocm` (Linux/AMD only, uses pre-built PyTorch ROCm 7.1 wheels)
+- **Run with ROCm**: `nix run .#rocm` (Linux/AMD only, uses pre-built PyTorch ROCm 7.2 wheels)
 - **Run with Intel XPU**: `nix run .#xpu` (Linux/Intel only, uses pre-built PyTorch XPU wheels — oneAPI/SYCL, no IPEX)
 - **Run with custom port**: `nix run -- --port=8080`
 - **Run with network access**: `nix run -- --listen 0.0.0.0`
@@ -58,7 +58,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Template input files: auto-generated in `nix/template-inputs.nix`
   - Update with: `./scripts/update-template-inputs.sh && git add nix/template-inputs.nix`
 - Python version: 3.12
-- PyTorch: macOS uses pre-built wheels (2.5.1, pinned to work around MPS bugs on macOS 26); CUDA uses pre-built wheels from pytorch.org (cu130); ROCm uses pre-built wheels from pytorch.org (rocm7.1); Intel XPU uses pre-built wheels from pytorch.org (xpu, oneAPI/SYCL — no IPEX); Linux CPU uses nixpkgs
+- PyTorch: macOS uses pre-built wheels (2.5.1, pinned to work around MPS bugs on macOS 26); CUDA uses pre-built wheels from pytorch.org (cu130); ROCm uses pre-built wheels from pytorch.org (rocm7.2); Intel XPU uses pre-built wheels from pytorch.org (xpu, oneAPI/SYCL — no IPEX); Linux CPU uses pre-built CPU wheels
 
 ## Project Architecture
 
@@ -91,7 +91,7 @@ Each module branches on this value to select platform-specific PyTorch wheels, r
 
 **XPU-specific notes** (Intel oneAPI / SYCL):
 
-- Wheel channel: `https://download.pytorch.org/whl/xpu` — `torch 2.10.0+xpu`, `torchvision 0.25.0+xpu`, `torchaudio 2.10.0+xpu` (cp312, Linux x86_64 only)
+- Wheel channel: `https://download.pytorch.org/whl/xpu` — `torch 2.14.0+xpu`, `torchvision 0.29.0+xpu`, `torchaudio 2.11.0+xpu` (cp312, Linux x86_64 only)
 - No IPEX required — ComfyUI uses `torch.xpu.is_available()` auto-detection
 - Host must provide Level Zero loader + Intel compute-runtime at runtime. The launcher prefers `/run/opengl-driver/lib` (NixOS `hardware.graphics.extraPackages`) and falls back to Nix-bundled `pkgs.level-zero` + `pkgs.intel-compute-runtime` + `pkgs.ocl-icd` for non-NixOS Linux
 - Runtime env vars set by launcher: `SYCL_CACHE_PERSISTENT=1`, `SYCL_CACHE_DIR=<data-dir>/.cache/libsycl_cache`. Opt-in: `COMFY_ENABLE_XPU_FP64_EMULATION=1` enables `OverrideDefaultFP64Settings` + `IGC_EnableDPEmulation` for iGPUs without native FP64
@@ -155,9 +155,9 @@ fonts/         - Bundled fonts for nodes requiring system fonts
 
 - macOS: PyTorch pinned to 2.5.1 to work around MPS bugs on macOS 26 (Tahoe); browser opens via `/usr/bin/open`
 - CUDA: Pre-built wheels from pytorch.org with CUDA 13.0 runtime supplied by nixpkgs (no separate toolkit needed); supports Turing through Blackwell and requires NVIDIA driver 580 or newer
-- ROCm: Pre-built wheels from pytorch.org with ROCm 7.1 runtime bundled; tested on gfx1100 (7900 XTX); `/run/opengl-driver/lib` provides AMD drivers on NixOS
+- ROCm: Pre-built wheels from pytorch.org with ROCm 7.2 runtime bundled; tested on gfx1100 (7900 XTX); `/run/opengl-driver/lib` provides AMD drivers on NixOS
 - Intel XPU: Pre-built wheels from pytorch.org (oneAPI / SYCL, no IPEX); supports Arc A/B series + Core Ultra iGPUs (Meteor Lake+); untested on maintainer hardware — treat external user reports as authoritative; `/run/opengl-driver/lib` preferred, Nix-bundled `level-zero`/`intel-compute-runtime` as non-NixOS fallback
-- Linux CPU: Uses nixpkgs PyTorch; browser opens via `xdg-open`
+- Linux CPU: Uses pre-built PyTorch CPU wheels; browser opens via `xdg-open`
 - Cross-platform Docker builds work from any system via `nix run .#buildDockerLinux` etc.
 
 ## CI/CD and Automation

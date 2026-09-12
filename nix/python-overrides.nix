@@ -12,7 +12,7 @@ let
     gpuSupport == "xpu" && pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64;
   useDarwinArm64 = pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64;
   sentencepieceNoGperf = pkgs.sentencepiece.override { withGPerfTools = false; };
-  cudaPackages = pkgs.cudaPackages_13;
+  cudaPackages = import ./cuda-packages.nix { inherit pkgs versions; };
 
   # Pre-built PyTorch CUDA wheels from pytorch.org
   # These avoid compiling PyTorch from source (which requires 30-60GB RAM and hours of build time)
@@ -21,7 +21,7 @@ let
 
   # Pre-built PyTorch ROCm wheels from pytorch.org
   # These avoid compiling PyTorch from source (which requires 30-60GB RAM and hours of build time)
-  rocmWheels = versions.pytorchWheels.rocm71;
+  rocmWheels = versions.pytorchWheels.rocm72;
 
   # Pre-built PyTorch XPU wheels from pytorch.org (Intel oneAPI / SYCL)
   # Unlike CUDA/ROCm, the XPU torch wheel does NOT bundle its SYCL / MKL /
@@ -71,22 +71,8 @@ let
     pkgs.glib
   ];
 
-  # CUDA libraries needed by PyTorch wheels (for auto-patchelf).
-  #
-  # These replace the `nvidia-*` PyPI wheels the torch wheel asks for, which we
-  # strip from its metadata. nixpkgs does not always carry the exact versions
-  # PyTorch pinned, and because the SONAMEs match, auto-patchelf accepts the
-  # substitution silently — any mismatch surfaces only at runtime. Current deltas
-  # against `torch-2.10.0+cu130`:
-  #
-  #   cuDNN         wheel wants 9.15.1.9  nixpkgs has 9.13.0.50  (older — risky direction)
-  #   NCCL          wheel wants 2.28.9    nixpkgs has 2.28.7     (older — risky direction)
-  #   cuSPARSELt    wheel wants 0.8.0     nixpkgs has 0.8.1.1    (newer — safe direction)
-  #
-  # The cuDNN/NCCL deltas are latent, not active: every symbol libtorch_cuda.so
-  # imports from them is still exported by the older builds. They clear once the
-  # nixpkgs input is bumped, which is blocked on the vendored-wheel metadata work
-  # in https://github.com/utensils/comfyui-nix/issues/81
+  # CUDA 13.0 toolkit from nixpkgs, with exact cuDNN/NCCL/NVSHMEM wheel
+  # versions selected in cuda-packages.nix to match PyTorch's requirements.
   cudaLibs = pkgs.lib.optionals useCuda (
     with cudaPackages;
     [
@@ -103,6 +89,7 @@ let
       cudnn # libcudnn.so.9
       nccl # libnccl.so.2
       cuda_nvrtc # libnvrtc.so.13
+      libnvjitlink # libnvJitLink.so.13
     ]
   );
 
@@ -123,6 +110,8 @@ final: prev:
 # declares them as separate `nvidia-*` PyPI requirements, which we strip from the
 # metadata below and satisfy from nixpkgs via `cudaLibs` instead.
 lib.optionalAttrs useCuda {
+  cuda-bindings = prev.cuda-bindings.override { inherit cudaPackages; };
+
   torch = final.buildPythonPackage {
     pname = "torch";
     version = cudaWheels.torch.version;
@@ -148,9 +137,8 @@ lib.optionalAttrs useCuda {
     postInstall = ''
       for metadata in "$out/${final.python.sitePackages}"/torch-*.dist-info/METADATA; do
         if [[ -f "$metadata" ]]; then
-          sed -i '/^Requires-Dist: cuda-bindings/d' "$metadata"
+          sed -i '/^Requires-Dist: cuda-toolkit/d' "$metadata"
           sed -i '/^Requires-Dist: nvidia-/d' "$metadata"
-          sed -i '/^Requires-Dist: triton/d' "$metadata"
         fi
       done
     '';
@@ -163,6 +151,8 @@ lib.optionalAttrs useCuda {
       jinja2
       fsspec
       setuptools
+      triton
+      cuda-bindings
     ];
     # Don't check for CUDA at import time (requires GPU)
     pythonImportsCheck = [ ];
@@ -401,10 +391,8 @@ lib.optionalAttrs useCuda {
     ];
     buildInputs = wheelBuildInputs ++ rocmLibs;
 
-    # The ROCm wheel names triton-rocm, which is provided by the bundled ROCm
-    # runtime rather than a PyPI package. The runtime dependency hook cannot
-    # recognize that provider, so validate the rewritten installed metadata in
-    # the rocm-torch-runtime-deps check instead.
+    # The ROCm Triton wheel is provided explicitly by linux-python-wheels.nix.
+    # Runtime checks verify that provider as well as the rewritten metadata.
     dontCheckRuntimeDeps = true;
     # These are provided by nixpkgs rocmPackages, not PyPI packages
     postInstall = ''
@@ -423,13 +411,14 @@ lib.optionalAttrs useCuda {
       jinja2
       fsspec
       setuptools
+      triton
     ];
     # Don't check for ROCm at import time (requires GPU)
     pythonImportsCheck = [ ];
     doCheck = false;
 
     # Passthru attributes expected by downstream packages (xformers, bitsandbytes, etc.)
-    # The wheel bundles ROCm 7.1 and supports all GPU architectures
+    # The wheel bundles ROCm 7.2 and supports all GPU architectures
     passthru = {
       cudaSupport = false;
       rocmSupport = true;
@@ -585,7 +574,10 @@ lib.optionalAttrs useCuda {
       nativeBuildInputs = [ pkgs.autoPatchelfHook ];
       buildInputs = wheelBuildInputs;
       autoPatchelfIgnoreMissingDeps = xpuIgnoreMissingLibs;
-      propagatedBuildInputs = with final; [ filelock ];
+      propagatedBuildInputs = with final; [
+        filelock
+        pyelftools
+      ];
       pythonImportsCheck = [ ]; # needs XPU runtime; can't import in build sandbox
       doCheck = false;
       dontCheckRuntimeDeps = true;
@@ -606,9 +598,9 @@ lib.optionalAttrs useCuda {
     # for torch instead of 21. triton-xpu is excluded — see tritonXpu above.
     intelOneapiRuntime = pkgs.stdenv.mkDerivation {
       pname = "intel-oneapi-runtime";
-      version = "2025.3";
+      version = versions.xpuRuntime.intel-sycl-rt.version;
       srcs = lib.mapAttrsToList (_: spec: pkgs.fetchurl { inherit (spec) url hash; }) (
-        lib.filterAttrs (n: _: n != "triton-xpu") versions.xpuRuntime
+        lib.filterAttrs (n: _: n != "triton-xpu" && n != "pyzes") versions.xpuRuntime
       );
       dontConfigure = true;
       dontBuild = true;
@@ -671,6 +663,14 @@ lib.optionalAttrs useCuda {
     # Expose triton as a named attr so python.withPackages can pick it up.
     triton = tritonXpu;
 
+    pyzes = final.buildPythonPackage {
+      pname = "pyzes";
+      inherit (versions.xpuRuntime.pyzes) version;
+      format = "wheel";
+      src = pkgs.fetchurl { inherit (versions.xpuRuntime.pyzes) url hash; };
+      doCheck = false;
+    };
+
     torch = final.buildPythonPackage {
       pname = "torch";
       version = xpuWheels.torch.version;
@@ -701,7 +701,10 @@ lib.optionalAttrs useCuda {
           fsspec
           setuptools
         ])
-        ++ [ tritonXpu ];
+        ++ [
+          tritonXpu
+          final.pyzes
+        ];
       propagatedNativeBuildInputs = [ intelOneapiRuntime ];
       pythonImportsCheck = [ ];
       doCheck = false;
@@ -873,54 +876,26 @@ lib.optionalAttrs useCuda {
 // lib.optionalAttrs (prev ? av) {
   av =
     let
-      # Use platform-specific abi3 wheels from PyPI (av 17.0.0, Python 3.12)
-      wheelSrc =
-        if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then
-          pkgs.fetchurl {
-            url = "https://files.pythonhosted.org/packages/d2/59/d19bc3257dd985d55337d7f0414c019414b97e16cd3690ebf9941a847543/av-17.0.0-cp311-abi3-manylinux_2_28_x86_64.whl";
-            hash = "sha256-EGDLqF+X9KM3MRFp2SwLXhQ0Us+lyg5l+kmdeVXoWS4=";
-          }
-        else if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isAarch64 then
-          pkgs.fetchurl {
-            url = "https://files.pythonhosted.org/packages/00/c0/637721f3cd5bb8bd16105a1a08efd781fc12f449931bdb3a4d0cfd63fa55/av-17.0.0-cp311-abi3-manylinux_2_28_aarch64.whl";
-            hash = "sha256-tEDaasR9oGKdUJMW8kvNhY8zFY290PG3KT1x6ZvrJt4=";
-          }
-        else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isx86_64 then
-          pkgs.fetchurl {
-            url = "https://files.pythonhosted.org/packages/b1/fb/55e3b5b5d1fc61466292f26fbcbabafa2642f378dc48875f8f554591e1a4/av-17.0.0-cp311-abi3-macosx_11_0_x86_64.whl";
-            hash = "sha256-7UAT+sd8MJpKaBQdz2FI8YIbsQc6NtQok3l2KmNy9xE=";
-          }
-        else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then
-          pkgs.fetchurl {
-            url = "https://files.pythonhosted.org/packages/52/03/9ace1acc08bc9ae38c14bf3a4b1360e995e4d999d1d33c2cbd7c9e77582a/av-17.0.0-cp311-abi3-macosx_14_0_arm64.whl";
-            hash = "sha256-5Etsg+nzvp957ofQt3onzqmpzWe9YwNiyGt+VqdI37s=";
-          }
+      platform =
+        if pkgs.stdenv.hostPlatform.isLinux then
+          (if pkgs.stdenv.hostPlatform.isx86_64 then "linuxX86_64" else "linuxAarch64")
         else
-          # Fallback to source build for unsupported platforms
-          null;
+          "darwinArm64";
+      pin = versions.vendored.av;
     in
-    if wheelSrc != null then
-      final.buildPythonPackage {
-        pname = "av";
-        version = "17.0.0";
-        format = "wheel";
-        src = wheelSrc;
-        # Wheel contains bundled FFmpeg libraries
-        dontBuild = true;
-        dontConfigure = true;
-        propagatedBuildInputs = [ final.numpy ];
-        # Linux manylinux wheels need autoPatchelfHook to fix library paths
-        nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
-        buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-          pkgs.stdenv.cc.cc.lib
-          pkgs.zlib
-        ];
-        pythonImportsCheck = [ "av" ];
-        doCheck = false;
-      }
-    else
-      # Fallback: try original package for unsupported platforms
-      prev.av;
+    final.buildPythonPackage {
+      pname = "av";
+      inherit (pin) version;
+      format = "wheel";
+      src = pkgs.fetchurl { inherit (pin.${platform}) url hash; };
+      nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
+      buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+        pkgs.stdenv.cc.cc.lib
+        pkgs.zlib
+      ];
+      pythonImportsCheck = [ "av" ];
+      doCheck = false;
+    };
 }
 
 # Disable tests for open-clip-torch (they hang waiting for model downloads)
@@ -948,18 +923,6 @@ lib.optionalAttrs useCuda {
   });
 }
 
-# inline-snapshot 0.34.2 fails three of its own documentation tests on the
-# pinned nixpkgs (they assert formatter output that has since changed) and is
-# not in the binary cache, so it gets built from source. It reaches us only as
-# a test helper in fastapi's checkInputs, where its own doc tests say nothing
-# about whether it works. Without this, fastapi and everything downstream of
-# it (openai, openapi-core, sqlframe) cannot build.
-// lib.optionalAttrs (prev ? inline-snapshot) {
-  inline-snapshot = prev.inline-snapshot.overridePythonAttrs (_old: {
-    doCheck = false;
-  });
-}
-
 # backrefs' test_timeout asserts that a regex operation exceeds a wall-clock
 # timeout, which does not hold on every builder: it passes locally but fails
 # on CI runners with "DID NOT RAISE TimeoutError". backrefs is not in the
@@ -972,10 +935,17 @@ lib.optionalAttrs useCuda {
   });
 }
 
-# Disable accelerate test that fails with torch 2.10.0 inductor in Nix sandbox
-// lib.optionalAttrs ((useCuda || useRocm || useXpu) && (prev ? accelerate)) {
+# PyTorch 2.14 uses openssl to hash its generated C++ precompiled header.
+# GPU builders cannot exercise the compiler without hardware, so retain their
+# existing test exclusion while making the tool available to CPU checks.
+// lib.optionalAttrs (prev ? accelerate) {
   accelerate = prev.accelerate.overridePythonAttrs (old: {
-    disabledTests = (old.disabledTests or [ ]) ++ [ "test_convert_to_fp32" ];
+    nativeCheckInputs = (old.nativeCheckInputs or [ ]) ++ [ pkgs.openssl ];
+    disabledTests =
+      (old.disabledTests or [ ])
+      ++ lib.optionals (useCuda || useRocm || useXpu) [
+        "test_convert_to_fp32"
+      ];
   });
 }
 
@@ -1004,10 +974,67 @@ lib.optionalAttrs useCuda {
   });
 }
 
-# Disable failing ffmpeg test for imageio (test_process_termination expects exit code 2 but gets 6)
+# PyAV 18 opens codecs eagerly, while imageio 2.37's PyAV write tests still
+# mutate the dimensions after opening. Keep the non-PyAV imageio suite enabled.
 // lib.optionalAttrs (prev ? imageio) {
   imageio = prev.imageio.overridePythonAttrs (old: {
     disabledTests = (old.disabledTests or [ ]) ++ [ "test_process_termination" ];
+    disabledTestPaths = (old.disabledTestPaths or [ ]) ++ [ "tests/test_pyav.py" ];
+  });
+}
+
+# The package's generated documentation snapshots depend on Black's exact
+# formatting version. The functional suite remains enabled.
+// lib.optionalAttrs (prev ? inline-snapshot) {
+  inline-snapshot = prev.inline-snapshot.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [ "test_docs" ];
+  });
+}
+
+# This is a wall-clock scaling assertion rather than a correctness test and is
+# unreliable when the Nix builder runs several dependency suites concurrently.
+// lib.optionalAttrs (prev ? django) {
+  django = prev.django.overridePythonAttrs (old: {
+    # Django has a custom checkPhase, so the standard disabledTests hook is not
+    # used. Rename the method before its unittest runner performs discovery.
+    postPatch = (old.postPatch or "") + ''
+      substituteInPlace tests/serializers/test_deserialization.py \
+        --replace-fail "    def test_crafted_xml_performance(self):" \
+                       "    def _test_crafted_xml_performance(self):"
+    '';
+    # The custom runner otherwise auto-detects every host CPU, ignoring Nix's
+    # --cores limit. Serial execution avoids excessive memory use and races in
+    # tests which share temporary filesystem state.
+    checkPhase = ''
+      runHook preCheck
+
+      pushd tests
+      ${final.python.interpreter} runtests.py --settings=test_sqlite --parallel=1
+      popd
+
+      runHook postCheck
+    '';
+  });
+}
+
+# This test asserts that Arrow's global allocator returns to within 128 bytes
+# of its starting value. The allocator may retain one additional 128-byte block
+# after the preceding suite, despite all CSV batches being released correctly.
+// lib.optionalAttrs (prev ? pyarrow) {
+  pyarrow = prev.pyarrow.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [ "test_batch_lifetime" ];
+  });
+}
+
+# These asynchronous kernel-disconnect tests are sensitive to load in the Nix
+# sandbox: orphan cleanup can miss its deadline, which also makes the companion
+# file-descriptor assertion report the sockets that are still being cleaned up.
+// lib.optionalAttrs (prev ? jupyter-server) {
+  jupyter-server = prev.jupyter-server.overridePythonAttrs (old: {
+    disabledTests = (old.disabledTests or [ ]) ++ [
+      "test_no_fd_leak_on_disconnect_with_orphaned_kernel_info_channel"
+      "test_disconnect_resolves_orphaned_kernel_info_future"
+    ];
   });
 }
 
@@ -1238,3 +1265,7 @@ lib.optionalAttrs useCuda {
     };
   };
 }
+
+// lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
+  import ./linux-python-wheels.nix { inherit pkgs versions gpuSupport; } final prev
+)
